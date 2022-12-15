@@ -1,0 +1,261 @@
+# -*- coding: utf-8 -*-
+import arcpy
+from arcpy import env
+import arcgis
+import pandas as pd
+import os
+import math
+
+#ID e RF da projeto
+pasta = arcpy.GetParameterAsText(0)
+id_projeto = arcpy.GetParameterAsText(1)
+projeto_mapa = id_projeto
+id_projeto = id_projeto.encode('utf-8')
+rf_projeto = "-"
+incremento = arcpy.GetParameterAsText(2)
+
+if incremento == 'true':
+   inc_37 = 3.7
+else:
+   inc_37 = 0
+
+pasta = pasta.replace("\\", "/")
+pasta = pasta.replace(":", "")
+pasta = pasta.replace("//Local_Base/", "")
+pasta = "//Local_Base/" + pasta
+ 
+# Copiar enderecos do perimetro, rotas e da pasta com os mxds
+arcpy.env.workspace = r"Database Connections/Connection to DATABASE_GEO.net.sde"
+perimetro = "BASE/BASE_GEO_LIMITE"
+rotas = "Rotas_Linhas"
+pasta_mxd = pasta + "/Arquivos_aux"
+gdb_aux = pasta_mxd + "/Base_fluxo.gdb"
+
+mxd_localizacao = "//Endereco_mxd/Mapa_Localizacao.mxd"
+mxd_soc = "//Endereco_mxd/Modelo_Socioambiental.mxd" 
+
+arcpy.AddMessage("Exportando tabelas de atributos e criando os buffers")
+#buffer 10km projeto
+selecao_projeto = gdb_aux + "/selecao_projeto" #nome no gdb
+
+busca_social = """{0} = '{1}'""".format(
+   arcpy.AddFieldDelimiters('perimetro', "NOME_ZONA"),
+   id_projeto)
+try:
+   arcpy.Delete_management(selecao_projeto)
+except:
+   print ""
+
+arcpy.Select_analysis(perimetro, selecao_projeto, busca_social)
+buffer_loc_social = gdb_aux + "/Buffer_loc_social" #nome no gdb
+
+try:
+   arcpy.Delete_management(buffer_loc_social)
+except:
+   print ""
+
+arcpy.analysis.Buffer(selecao_projeto, buffer_loc_social, "10 Kilometers","FULL","ROUND", "ALL") 
+
+# tabela de atributos perimetro
+outTable_proj = "tabela_expansao.txt"
+
+if os.path.isfile(pasta_mxd + "/" + outTable_proj):
+   os.remove(pasta_mxd + "/" + outTable_proj)
+   os.remove(pasta_mxd + "/" + outTable_proj +".xml")
+
+arcpy.DeleteField_management(selecao_projeto, ["CAMPO_1", "CAMPO_2", "CAMPO_3"])
+
+arcpy.TableToTable_conversion(selecao_projeto, pasta_mxd, outTable_proj)
+tabela_per = pd.read_csv(pasta_mxd + "/" + outTable_proj, sep= ';', decimal = ',' )
+tabela_per = tabela_per[tabela_per.NOME_ZONA == id_projeto ]
+
+area_proj = tabela_per.iloc[0]['Shape_Area']
+area_proj = area_proj / 10000
+area_proj = area_proj.round(2)
+
+modalidade = tabela_per.iloc[0]['MODALIDADE'] 
+
+#define comprimento do buffer 
+busca_rotas = """{0} = '{1}'""".format(
+   arcpy.AddFieldDelimiters('rotas', "Origem"),
+   id_projeto) 
+
+selecao = gdb_aux + "/Selecao_localizacao" #nome no gdb
+
+try:
+   arcpy.Delete_management(selecao)
+except:
+   print ""
+
+arcpy.Select_analysis(rotas, selecao, busca_rotas) #seleciona as rotas da projeto
+buffer_localizacao = gdb_aux + "/Buffer_localizacao" #nome no gdb 
+
+try:
+   arcpy.Delete_management(buffer_localizacao)
+except:
+   print "" 
+
+# tabela de atributos localizacao e tamanho do buffer
+outTable_rota = "tabela_localizacao.txt" 
+
+if os.path.isfile(pasta_mxd + "/" + outTable_rota):
+   os.remove(pasta_mxd + "/" + outTable_rota)
+   os.remove(pasta_mxd + "/" + outTable_rota +".xml")
+
+arcpy.TableToTable_conversion(selecao, pasta_mxd, outTable_rota)
+tabela_loc = pd.read_csv(pasta_mxd + "/" + outTable_rota, sep= ';', decimal = ',' )
+tabela_loc = tabela_loc[tabela_loc.Origem == id_projeto ]
+distancia = (tabela_loc['Shape_Length'].sum()) / 2000
+buffer_loc = 0
+
+if distancia < 100:
+   buffer_loc = buffer_loc + 1
+elif distancia < 150:
+   buffer_loc = buffer_loc + 1.5
+else:
+   buffer_loc = buffer_loc + 2
+
+#Buffer mapa localizacao
+km_buffer = str(buffer_loc) + " Kilometers"
+arcpy.analysis.Buffer(selecao_projeto, buffer_localizacao, km_buffer,"FULL","ROUND", "ALL")
+
+#calculo distancias fabricas
+dist_fab1_asf = tabela_loc[(tabela_loc.Tipo == "ASFALTO") & (tabela_loc.Destino == "Fab_1")]
+dist_fab1_asf = dist_fab1_asf['Shape_Length'].sum()
+dist_fab1_asf = dist_fab1_asf/1000 
+dist_fab1_terra = tabela_loc[(tabela_loc.Tipo == "TERRA") & (tabela_loc.Destino == "Fab_1")]
+dist_fab1_terra = dist_fab1_terra['Shape_Length'].sum()
+dist_fab1_terra = dist_fab1_terra/1000
+
+dist_fab2_asf = tabela_loc[(tabela_loc.Tipo == "ASFALTO") & (tabela_loc.Destino == "Fab_2")]
+dist_fab2_asf = dist_fab2_asf['Shape_Length'].sum()
+dist_fab2_asf = dist_fab2_asf/1000 + inc_37
+dist_fab2_terra = tabela_loc[(tabela_loc.Tipo == "TERRA") & (tabela_loc.Destino == "Fab_2")]
+dist_fab2_terra = dist_fab2_terra['Shape_Length'].sum()
+dist_fab2_terra = dist_fab2_terra/1000
+
+dist_fab2_total = dist_fab2_asf + dist_fab2_terra
+dist_fab1_total = dist_fab1_asf + dist_fab1_terra 
+
+dist_fab1_asf = round(dist_fab1_asf, 2)
+dist_fab1_terra = round(dist_fab1_terra, 2)
+dist_fab2_asf = round(dist_fab2_asf, 2)
+dist_fab2_terra = round(dist_fab2_terra, 2)
+if dist_fab1_terra == 0:
+   dist_fab1_terra = "0.00"
+if dist_fab2_terra == 0:
+   dist_fab2_terra = "0.00"
+
+dist_fab2_total = round(dist_fab2_total, 2)
+dist_fab1_total = round(dist_fab1_total, 2)
+
+# gerando mapa
+arcpy.AddMessage("Configurando mxd socioambiental")
+mxd_social = arcpy.mapping.MapDocument(mxd_soc)
+df_social = arcpy.mapping.ListDataFrames(mxd_social)[0] 
+
+projeto_sel = arcpy.mapping.ListLayers(mxd_social, "Perimetro", df_social)[0] #Projeto
+projeto_sel.replaceDataSource(r"Database Connections/Connection to DATABASE_GEO.net.sde", "SDE_WORKSPACE", "BASE_GEO_LIMITE") 
+
+busca_projeto_social = """{0} = '{1}'""".format(
+   arcpy.AddFieldDelimiters('projeto_sel', "NOME_ZONA"),
+   id_projeto)
+
+projeto_sel.definitionQuery = busca_projeto_social
+arcpy.RefreshActiveView() 
+
+buffer_social = arcpy.mapping.ListLayers(mxd_social, "Buffer 10 km", df_social)[0]
+buffer_social.replaceDataSource(gdb_aux, "FILEGDB_WORKSPACE", "Buffer_loc_social")
+buffer_social.definitionQuery = 'OBJECTID = 1'  #id_projeto        OBJECTID
+arcpy.RefreshActiveView()
+
+#Zoom no buffer de 10 km
+arcpy.SelectLayerByAttribute_management(buffer_social, "NEW_SELECTION", '"OBJECTID" = 1' )
+df_social.zoomToSelectedFeatures()
+
+arcpy.SelectLayerByAttribute_management(buffer_social, "CLEAR_SELECTION") 
+
+#Renomeia a layer projeto
+projeto_sel.name = "Perimetro Projeto"
+
+# Atualiza dados do selo
+nome_negociador = arcpy.mapping.ListLayoutElements(mxd_social, "TEXT_ELEMENT", "Nome_Negociador")[0]
+nome_negociador.text = negociador 
+nome_modalidade = arcpy.mapping.ListLayoutElements(mxd_social, "TEXT_ELEMENT", "Nome_Modalidade")[0]
+nome_modalidade.text = modalidade
+
+area_projeto = arcpy.mapping.ListLayoutElements(mxd_social, "TEXT_ELEMENT", "Area_Projeto")[0]
+area_projeto.text = str(area_proj)       
+
+nome_projeto = arcpy.mapping.ListLayoutElements(mxd_social, "TEXT_ELEMENT", "Nome_Projeto")[0]
+nome_projeto.text = id_projeto
+nome_rf = arcpy.mapping.ListLayoutElements(mxd_social, "TEXT_ELEMENT", "Nome_RF")[0]
+nome_rf.text = rf_projeto
+
+arcpy.AddMessage("Imprimindo mapa socioambiental")
+output_PDF = pasta + "/Mapas/" + projeto_mapa + "_Socioambiental.pdf"
+arcpy.mapping.ExportToPDF(mxd_social, output_PDF)
+del mxd_social
+
+########### MAPA LOCALIZACAO
+# gerando mapa
+arcpy.AddMessage("Configurando mapa de localização")
+mxd_loc = arcpy.mapping.MapDocument(mxd_localizacao)
+df_localizacao = arcpy.mapping.ListDataFrames(mxd_loc)[0]
+
+# le a layer buffer
+buffer_mapa = arcpy.mapping.ListLayers(mxd_loc, "Buffer_Loc", df_localizacao)[0]
+buffer_mapa.replaceDataSource(gdb_aux, "FILEGDB_WORKSPACE", "Buffer_localizacao")
+
+#filtro da projeto
+projeto_id = arcpy.mapping.ListLayers(mxd_loc, "Em_Aprovacao", df_localizacao)[0]
+projeto_id.replaceDataSource(r"Database Connections/Connection to DATABASE_GEO.net.sde", "SDE_WORKSPACE", "BASE_GEO_LIMITE")
+busca_projeto_loc = """{0} = '{1}'""".format(
+   arcpy.AddFieldDelimiters('projeto_id', "NOME_ZONA"),
+   id_projeto)
+
+projeto_id.definitionQuery = busca_projeto_loc  #id_projeto
+rota = arcpy.mapping.ListLayers(mxd_loc, "ROTA PRELIMINAR", df_localizacao)[0]
+
+#filtro da rota
+busca_rota_loc = """{0} = '{1}'""".format(
+   arcpy.AddFieldDelimiters('rota', "Origem"),
+   id_projeto)
+
+rota.definitionQuery = busca_rota_loc
+
+# ajusta zoom para rota e buffer
+arcpy.SelectLayerByAttribute_management(buffer_mapa, "SWITCH_SELECTION") #OBJECTID
+arcpy.SelectLayerByAttribute_management(rota, "NEW_SELECTION", busca_rota_loc )  # atencao aspas duplas em projeto
+df_localizacao.zoomToSelectedFeatures()
+
+arcpy.SelectLayerByAttribute_management(buffer_mapa, "CLEAR_SELECTION")
+arcpy.SelectLayerByAttribute_management(rota, "CLEAR_SELECTION")
+arcpy.RefreshActiveView() 
+
+#renomeia a layer com nome da projeto
+projeto_id.name = id_projeto
+
+# atualiza tabela distancias
+fab1_asf = arcpy.mapping.ListLayoutElements(mxd_loc, "TEXT_ELEMENT", "Fab1_Asf")[0]
+fab1_asf.text = dist_fab1_asf
+
+fab1_terra = arcpy.mapping.ListLayoutElements(mxd_loc, "TEXT_ELEMENT", "Fab1_Terra")[0]
+fab1_terra.text = dist_fab1_terra
+
+fab2_asf = arcpy.mapping.ListLayoutElements(mxd_loc, "TEXT_ELEMENT", "Fab2_Asf")[0]
+fab2_asf.text = dist_fab2_asf
+
+fab2_terra = arcpy.mapping.ListLayoutElements(mxd_loc, "TEXT_ELEMENT", "Fab2_Terra")[0]
+fab2_terra.text = dist_fab2_terra
+
+fab1_total = arcpy.mapping.ListLayoutElements(mxd_loc, "TEXT_ELEMENT", "Fab1_Total")[0]
+fab1
+fab2_total = arcpy.mapping.ListLayoutElements(mxd_loc, "TEXT_ELEMENT", "Fab2_Total")[0]
+fab2_total.text = dist_fab2_total
+
+arcpy.AddMessage("Imprimindo mapa de localização")
+output_PDF = pasta + "/Mapas/" + projeto_mapa + "_Localizacao.pdf"
+arcpy.mapping.ExportToPDF(mxd_loc, output_PDF)
+
+del mxd_loc
